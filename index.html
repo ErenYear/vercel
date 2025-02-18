@@ -1,71 +1,98 @@
 <!DOCTYPE html>
 <html>
-<head>
-  <meta charset="UTF-8" />
-  <title>Live Voice Chat</title>
-</head>
-<body>
-  <h1>Live Voice Chat</h1>
-  <p id="status">Click “Start” to begin recording.</p>
-  <button id="startButton">Start Recording</button>
-  <button id="stopButton" disabled>Stop Recording</button>
-  
-  <script>
-    // Get the chat_id from the URL query parameters (provided by the /vc button)
-    const urlParams = new URLSearchParams(window.location.search);
-    const chat_id = urlParams.get('chat_id');
-    if (!chat_id) {
-      alert("Error: No chat_id provided in URL.");
-    }
-    
-    let mediaRecorder;
-    
-    const startButton = document.getElementById("startButton");
-    const stopButton = document.getElementById("stopButton");
-    const statusEl = document.getElementById("status");
+  <head>
+    <meta charset="UTF-8" />
+    <title>Live Voice Chat</title>
+  </head>
+  <body>
+    <h1>Live Voice Chat</h1>
+    <button id="start">Start Mic</button>
+    <button id="stop" disabled>Stop Mic</button>
+    <p id="status">Status: Idle</p>
+    <script>
+      let ws;
+      let audioContext;
+      let processor;
+      let stream;
+      let chatId;
 
-    startButton.addEventListener("click", async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        // Start recording with a timeslice of 3000 ms to get 3-second chunks
-        mediaRecorder = new MediaRecorder(stream);
-        mediaRecorder.start(3000);
-        statusEl.textContent = "Recording...";
-
-        mediaRecorder.addEventListener("dataavailable", event => {
-          if (event.data.size > 0) {
-            // Create form data for the audio chunk
-            const formData = new FormData();
-            formData.append("chat_id", chat_id);
-            formData.append("audio_file", event.data, "chunk.wav");
-
-            // Send the chunk to your Ubuntu server endpoint
-            fetch("http://142.93.211.253:8000/upload_audio", {
-              method: "POST",
-              body: formData
-            })
-            .then(response => response.json())
-            .then(data => console.log("Chunk uploaded:", data))
-            .catch(error => console.error("Upload error:", error));
-          }
-        });
-
-        startButton.disabled = true;
-        stopButton.disabled = false;
-      } catch (err) {
-        console.error("Error accessing microphone:", err);
-        statusEl.textContent = "Error accessing microphone.";
+      // Get chat_id from URL query parameters
+      const params = new URLSearchParams(window.location.search);
+      chatId = params.get('chat_id');
+      if (!chatId) {
+        document.getElementById("status").innerText = "Missing chat_id in URL.";
       }
-    });
 
-    stopButton.addEventListener("click", () => {
-      if (mediaRecorder && mediaRecorder.state !== "inactive") {
-        mediaRecorder.stop();
-        statusEl.textContent = "Recording stopped.";
-      }
-      startButton.disabled = false;
-      stopButton.disabled = true;
-    });
-  </script>
-</body>
+      // IMPORTANT: Change this to the public address of your Ubuntu server
+      // where the WebSocket server is running.
+      const wsServerUrl = "ws://142.93.211.253:8765";
+
+      document.getElementById("start").onclick = async () => {
+        if (!chatId) return;
+        // Connect to the WebSocket server and pass chat_id as a query parameter
+        ws = new WebSocket(`${wsServerUrl}/?chat_id=${chatId}`);
+        ws.binaryType = "arraybuffer";
+        ws.onopen = async () => {
+          document.getElementById("status").innerText =
+            "WebSocket connected. Starting microphone...";
+          // Request microphone access
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: { sampleRate: 48000, channelCount: 1 },
+          });
+          // Create an AudioContext with the same sample rate
+          audioContext = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: 48000,
+          });
+          const source = audioContext.createMediaStreamSource(stream);
+          // Create a ScriptProcessorNode to capture audio data.
+          // Note: ScriptProcessorNode is deprecated but still works in most browsers.
+          processor = audioContext.createScriptProcessor(4096, 1, 1);
+          source.connect(processor);
+          processor.connect(audioContext.destination);
+          processor.onaudioprocess = (e) => {
+            const inputData = e.inputBuffer.getChannelData(0);
+            // Convert float ([-1, 1]) samples to 16-bit PCM
+            const buffer = new ArrayBuffer(inputData.length * 2);
+            const view = new DataView(buffer);
+            for (let i = 0; i < inputData.length; i++) {
+              let s = Math.max(-1, Math.min(1, inputData[i]));
+              view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+            }
+            // Send the binary PCM data via WebSocket
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(buffer);
+            }
+          };
+          document.getElementById("start").disabled = true;
+          document.getElementById("stop").disabled = false;
+        };
+        ws.onclose = () => {
+          document.getElementById("status").innerText =
+            "WebSocket disconnected.";
+        };
+        ws.onerror = (err) => {
+          console.error("WebSocket error:", err);
+          document.getElementById("status").innerText = "WebSocket error.";
+        };
+      };
+
+      document.getElementById("stop").onclick = () => {
+        if (processor) {
+          processor.disconnect();
+        }
+        if (audioContext) {
+          audioContext.close();
+        }
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop());
+        }
+        if (ws) {
+          ws.close();
+        }
+        document.getElementById("status").innerText = "Microphone stopped.";
+        document.getElementById("start").disabled = false;
+        document.getElementById("stop").disabled = true;
+      };
+    </script>
+  </body>
 </html>
