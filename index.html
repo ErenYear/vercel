@@ -1,98 +1,67 @@
 <!DOCTYPE html>
 <html>
-  <head>
-    <meta charset="UTF-8" />
-    <title>Live Voice Chat</title>
-  </head>
-  <body>
-    <h1>Live Voice Chat</h1>
-    <button id="start">Start Mic</button>
-    <button id="stop" disabled>Stop Mic</button>
-    <p id="status">Status: Idle</p>
+<head>
+    <title>Live Voice Streaming</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body { display: flex; justify-content: center; align-items: center; height: 100vh; }
+        button { padding: 15px 30px; font-size: 18px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <button id="micButton">Start Mic</button>
+
     <script>
-      let ws;
-      let audioContext;
-      let processor;
-      let stream;
-      let chatId;
+        const params = new URLSearchParams(window.location.search)
+        const chatId = params.get('chat_id')
+        let isRecording = false
+        let mediaRecorder
+        let ws
 
-      // Get chat_id from URL query parameters
-      const params = new URLSearchParams(window.location.search);
-      chatId = params.get('chat_id');
-      if (!chatId) {
-        document.getElementById("status").innerText = "Missing chat_id in URL.";
-      }
-
-      // IMPORTANT: Change this to the public address of your Ubuntu server
-      // where the WebSocket server is running.
-      const wsServerUrl = "ws://142.93.211.253:8765";
-
-      document.getElementById("start").onclick = async () => {
-        if (!chatId) return;
-        // Connect to the WebSocket server and pass chat_id as a query parameter
-        ws = new WebSocket(`${wsServerUrl}/?chat_id=${chatId}`);
-        ws.binaryType = "arraybuffer";
-        ws.onopen = async () => {
-          document.getElementById("status").innerText =
-            "WebSocket connected. Starting microphone...";
-          // Request microphone access
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: { sampleRate: 48000, channelCount: 1 },
-          });
-          // Create an AudioContext with the same sample rate
-          audioContext = new (window.AudioContext || window.webkitAudioContext)({
-            sampleRate: 48000,
-          });
-          const source = audioContext.createMediaStreamSource(stream);
-          // Create a ScriptProcessorNode to capture audio data.
-          // Note: ScriptProcessorNode is deprecated but still works in most browsers.
-          processor = audioContext.createScriptProcessor(4096, 1, 1);
-          source.connect(processor);
-          processor.connect(audioContext.destination);
-          processor.onaudioprocess = (e) => {
-            const inputData = e.inputBuffer.getChannelData(0);
-            // Convert float ([-1, 1]) samples to 16-bit PCM
-            const buffer = new ArrayBuffer(inputData.length * 2);
-            const view = new DataView(buffer);
-            for (let i = 0; i < inputData.length; i++) {
-              let s = Math.max(-1, Math.min(1, inputData[i]));
-              view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        async function startRecording() {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+            const audioContext = new AudioContext()
+            const source = audioContext.createMediaStreamSource(stream)
+            const processor = audioContext.createScriptProcessor(2048, 1, 1)
+            
+            source.connect(processor)
+            processor.connect(audioContext.destination)
+            
+            ws = new WebSocket(`wss://142.93.211.253:${WS_PORT}`)
+            
+            ws.onopen = () => {
+                ws.send(chatId)
+                processor.onaudioprocess = (e) => {
+                    const input = e.inputBuffer.getChannelData(0)
+                    const pcm = convertFloat32ToInt16(input)
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(pcm)
+                    }
+                }
             }
-            // Send the binary PCM data via WebSocket
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(buffer);
-            }
-          };
-          document.getElementById("start").disabled = true;
-          document.getElementById("stop").disabled = false;
-        };
-        ws.onclose = () => {
-          document.getElementById("status").innerText =
-            "WebSocket disconnected.";
-        };
-        ws.onerror = (err) => {
-          console.error("WebSocket error:", err);
-          document.getElementById("status").innerText = "WebSocket error.";
-        };
-      };
+        }
 
-      document.getElementById("stop").onclick = () => {
-        if (processor) {
-          processor.disconnect();
+        function convertFloat32ToInt16(buffer) {
+            const l = buffer.length
+            const buf = new Int16Array(l)
+            for (let i = 0; i < l; i++) {
+                buf[i] = Math.min(1, buffer[i]) * 0x7FFF
+            }
+            return buf.buffer
         }
-        if (audioContext) {
-          audioContext.close();
-        }
-        if (stream) {
-          stream.getTracks().forEach((track) => track.stop());
-        }
-        if (ws) {
-          ws.close();
-        }
-        document.getElementById("status").innerText = "Microphone stopped.";
-        document.getElementById("start").disabled = false;
-        document.getElementById("stop").disabled = true;
-      };
+
+        document.getElementById('micButton').addEventListener('click', async () => {
+            if (!isRecording) {
+                isRecording = true
+                document.getElementById('micButton').textContent = 'Stop Mic'
+                await startRecording()
+            } else {
+                isRecording = false
+                document.getElementById('micButton').textContent = 'Start Mic'
+                if (ws) ws.close()
+            }
+        })
     </script>
-  </body>
+</body>
 </html>
