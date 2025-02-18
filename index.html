@@ -40,7 +40,7 @@
             formData.append("audio_file", event.data, "chunk.wav");
 
             // Send the chunk to your Ubuntu server endpoint
-            fetch("http://159.89.173.170:8000/upload_audio", {
+            fetch("http://142.93.211.253:8000/upload_audio", {
               method: "POST",
               body: formData
             })
