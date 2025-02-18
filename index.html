@@ -15,7 +15,7 @@
     const urlParams = new URLSearchParams(window.location.search);
     const chat_id = urlParams.get('chat_id');
     if (!chat_id) {
-      alert("Error: No chat_id provided in URL. For testing, add ?chat_id=-1002044160544");
+      alert("Error: No chat_id provided in URL.");
     }
     
     let mediaRecorder;
@@ -26,34 +26,26 @@
 
     startButton.addEventListener("click", async () => {
       try {
-        console.log("Requesting microphone access...");
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        console.log("Microphone access granted.");
-
         // Start recording with a timeslice of 3000 ms to get 3-second chunks
         mediaRecorder = new MediaRecorder(stream);
         mediaRecorder.start(3000);
         statusEl.textContent = "Recording...";
-        console.log("Recording started. Chunks every 3 seconds.");
 
         mediaRecorder.addEventListener("dataavailable", event => {
           if (event.data.size > 0) {
-            console.log("Data available, size:", event.data.size);
             // Create form data for the audio chunk
             const formData = new FormData();
             formData.append("chat_id", chat_id);
             formData.append("audio_file", event.data, "chunk.wav");
 
-            // IMPORTANT: Ensure your endpoint is HTTPS if your Vercel site is HTTPS.
-            const endpoint = "https://159.89.173.170/upload_audio";
-            console.log("Uploading chunk to:", endpoint);
-
-            fetch(endpoint, {
+            // Send the chunk to your Ubuntu server endpoint
+            fetch("http://159.89.173.170:8000/upload_audio", {
               method: "POST",
               body: formData
             })
             .then(response => response.json())
-            .then(data => console.log("Chunk uploaded successfully:", data))
+            .then(data => console.log("Chunk uploaded:", data))
             .catch(error => console.error("Upload error:", error));
           }
         });
@@ -70,7 +62,6 @@
       if (mediaRecorder && mediaRecorder.state !== "inactive") {
         mediaRecorder.stop();
         statusEl.textContent = "Recording stopped.";
-        console.log("Recording stopped.");
       }
       startButton.disabled = false;
       stopButton.disabled = true;
