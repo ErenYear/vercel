@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Live Voice Chat</title>
+</head>
+<body>
+  <h1>Live Voice Chat</h1>
+  <p id="status">Click “Start” to begin recording.</p>
+  <button id="startButton">Start Recording</button>
+  <button id="stopButton" disabled>Stop Recording</button>
+  
+  <script>
+    // Get the chat_id from the URL query parameters (provided by the /vc button)
+    const urlParams = new URLSearchParams(window.location.search);
+    const chat_id = urlParams.get('chat_id');
+    if (!chat_id) {
+      alert("Error: No chat_id provided in URL.");
+    }
+    
+    let mediaRecorder;
+    
+    const startButton = document.getElementById("startButton");
+    const stopButton = document.getElementById("stopButton");
+    const statusEl = document.getElementById("status");
+
+    startButton.addEventListener("click", async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // Start recording with a timeslice of 3000 ms to get 3-second chunks
+        mediaRecorder = new MediaRecorder(stream);
+        mediaRecorder.start(3000);
+        statusEl.textContent = "Recording...";
+
+        mediaRecorder.addEventListener("dataavailable", event => {
+          if (event.data.size > 0) {
+            // Create form data for the audio chunk
+            const formData = new FormData();
+            formData.append("chat_id", chat_id);
+            formData.append("audio_file", event.data, "chunk.wav");
+
+            // Send the chunk to your Ubuntu server endpoint
+            fetch("https://your-ubuntu-server-domain.com/upload_audio", {
+              method: "POST",
+              body: formData
+            })
+            .then(response => response.json())
+            .then(data => console.log("Chunk uploaded:", data))
+            .catch(error => console.error("Upload error:", error));
+          }
+        });
+
+        startButton.disabled = true;
+        stopButton.disabled = false;
+      } catch (err) {
+        console.error("Error accessing microphone:", err);
+        statusEl.textContent = "Error accessing microphone.";
+      }
+    });
+
+    stopButton.addEventListener("click", () => {
+      if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        mediaRecorder.stop();
+        statusEl.textContent = "Recording stopped.";
+      }
+      startButton.disabled = false;
+      stopButton.disabled = true;
+    });
+  </script>
+</body>
+</html>
