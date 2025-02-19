@@ -15,6 +15,8 @@
     <div id="log"></div>  <script>
         const params = new URLSearchParams(window.location.search)
         const chatId = params.get('chat_id')
+        // Retrieve ws_port from URL parameters
+        const WS_PORT = params.get('ws_port') // Get ws_port from URL and define JS variable
         let isRecording = false
         let mediaRecorder
         let ws
@@ -38,7 +40,7 @@
                 processor.connect(audioContext.destination);
 
                 // Use ws:// for now for simplicity
-                ws = new WebSocket(`ws://142.93.211.253:${WS_PORT}`); // Changed to ws://
+                ws = new WebSocket(`ws://142.93.211.253:${WS_PORT}`); // WS_PORT is now defined in JS
                 log(`Connecting to WebSocket ws://142.93.211.253:${WS_PORT}...`);
 
                 ws.onopen = async () => {
