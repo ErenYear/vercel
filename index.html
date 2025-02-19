@@ -41,7 +41,7 @@
 
                 // Use ws:// for now for simplicity
                 ws = new WebSocket(`wss://erenyeager.club:${WS_PORT}`); // <--- wss:// and YOUR DOMAIN
-                log(`Connecting to WebSocket ws://142.93.211.253:${WS_PORT}...`);
+                log(`Connecting to WebSocket wss://erenyeager.club:${WS_PORT}...`);
 
                 ws.onopen = async () => {
                     log('WebSocket connection opened.');
