@@ -47,12 +47,6 @@
                     log('WebSocket connection opened.');
                     ws.send(chatId); // Send chatId FIRST
 
-                    // Capture initial noise profile (short audio chunk) - Moved to AFTER ws.send(chatId);
-                    const noiseProfileDuration = 0.1; // 0.1 seconds for noise profile
-                    const noiseProfileData = await captureAudioChunk(stream, noiseProfileDuration, audioContext);
-                    ws.send(noiseProfileData); // Send noise profile SECOND
-                    log('Noise profile sent.');
-
 
                     processor.onaudioprocess = (e) => {
                         const input = e.inputBuffer.getChannelData(0);
@@ -78,40 +72,6 @@
             } catch (error) {
                 log(`Error starting recording: ${error}`);
             }
-        }
-
-        async function captureAudioChunk(stream, duration, audioContext) {
-            return new Promise(resolve => {
-                const recorder = audioContext.createScriptProcessor(2048, 1, 1);
-                let audioData = [];
-                recorder.onaudioprocess = (e) => {
-                    const input = e.inputBuffer.getChannelData(0);
-                    audioData.push(convertFloat32ToInt16(input));
-                };
-                navigator.mediaDevices.getUserMedia({ audio: true })
-                    .then(micStream => {
-                        const source = audioContext.createMediaStreamSource(micStream);
-                        source.connect(recorder);
-                        recorder.connect(audioContext.destination);
-
-                        setTimeout(() => {
-                            source.disconnect(recorder);
-                            recorder.disconnect(audioContext.destination);
-                            micStream.getTracks().forEach(track => track.stop()); // Stop the temporary stream
-
-                            // Concatenate audioData into a single buffer
-                            let combinedData = new Int16Array(0);
-                            audioData.forEach(chunk => {
-                                const temp = new Int16Array(combinedData.length + chunk.length);
-                                temp.set(combinedData, 0);
-                                temp.set(chunk, combinedData.length);
-                                combinedData = temp;
-                            });
-                            resolve(combinedData.buffer);
-
-                        }, duration * 1000); // Duration in milliseconds
-                    });
-            });
         }
 
 
