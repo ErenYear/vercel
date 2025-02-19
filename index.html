@@ -40,7 +40,7 @@
                 processor.connect(audioContext.destination);
 
                 // Use ws:// for now for simplicity
-                ws = new WebSocket(`ws://142.93.211.253:${WS_PORT}`); // <--- Change to wss://
+                ws = new WebSocket(`wss://erenyeager.club:${WS_PORT}`); // <--- wss:// and YOUR DOMAIN
                 log(`Connecting to WebSocket ws://142.93.211.253:${WS_PORT}...`);
 
                 ws.onopen = async () => {
