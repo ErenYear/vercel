@@ -174,46 +174,77 @@
             if (ws) {
                 ws.close();
             }
-            
+ 
             updateStatus('Connecting...', 'connecting');
-            
+    
             try {
                 ws = new WebSocket(`wss://erenyeager.club:${wsPort}`);
-                
+        
+                // Set a connection timeout
+                const connectionTimeout = setTimeout(() => {
+                    if (ws.readyState !== WebSocket.OPEN) {
+                        log('Connection timeout', true);
+                        ws.close();
+                        updateStatus('Connection timeout', 'error');
+                    }
+                }, 10000);
+        
                 ws.onopen = () => {
+                    clearTimeout(connectionTimeout);
                     log('WebSocket connection established');
-                    ws.send(chatId);
+            
+                    // Send chat ID after connection is established
+                    setTimeout(() => {
+                        ws.send(chatId);
+                    }, 500);
+            
                     reconnectAttempts = 0;
+            
+                    // Set up keepalive ping
+                    const pingInterval = setInterval(() => {
+                        if (ws.readyState === WebSocket.OPEN) {
+                            ws.send('ping');
+                        } else {
+                            clearInterval(pingInterval);
+                }
+                    }, 30000);
+            
+                    // Clean up interval on close
+                    ws.addEventListener('close', () => clearInterval(pingInterval));
                 };
-                
+        
                 ws.onmessage = (event) => {
                     log(`Server: ${event.data}`);
-                    if (event.data.startsWith('SUCCESS')) {
+                    if (event.data.startsWith('CONNECTED')) {
+                        updateStatus('WebSocket connected, initializing...', 'connecting');
+                    } else if (event.data.startsWith('SUCCESS')) {
                         updateStatus('Connected to voice chat', 'connected');
                     } else if (event.data.startsWith('ERROR')) {
                         updateStatus(event.data, 'error');
                         stopRecording();
                     }
                 };
-                
+        
                 ws.onclose = (event) => {
+                    clearTimeout(connectionTimeout);
                     log(`WebSocket closed: ${event.reason || 'No reason provided'}`);
                     updateStatus('Disconnected', 'error');
                     stopRecording(false);
-                    
-                    // Attempt to reconnect
+            
+                    // Attempt to reconnect with exponential backoff
                     if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS && isRecording) {
                         reconnectAttempts++;
-                        log(`Attempting to reconnect (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
-                        setTimeout(connectWebSocket, 2000);
+                        const backoffTime = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
+                        log(`Attempting to reconnect in ${backoffTime/1000}s (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+                        setTimeout(connectWebSocket, backoffTime);
                     }
                 };
-                
+        
                 ws.onerror = (error) => {
                     log(`WebSocket error`, true);
                     updateStatus('Connection error', 'error');
                 };
-                
+        
             } catch (error) {
                 log(`Error creating WebSocket: ${error.message}`, true);
                 updateStatus('Connection failed', 'error');
