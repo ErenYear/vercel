@@ -1,145 +1,356 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
+    <title>Telegram Voice Streaming</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Live Voice Streaming</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/resample@1.0.0/dist/resample.min.js"></script> <!-- Resample.js library -->
     <style>
-        body { display: flex; justify-content: center; align-items: center; height: 100vh; }
-        button { padding: 15px 30px; font-size: 18px; cursor: pointer; }
-        #log { margin-top: 20px; font-size: smaller; white-space: pre-line; } /* For logging */
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        
+        .container {
+            background-color: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            width: 90%;
+            max-width: 400px;
+            text-align: center;
+        }
+        
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 20px;
+            color: #333;
+        }
+        
+        .mic-button {
+            position: relative;
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 20px auto;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            transition: all 0.3s;
+        }
+        
+        .mic-button.recording {
+            background-color: #f44336;
+            animation: pulse 1.5s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+        
+        .mic-icon {
+            width: 30px;
+            height: 30px;
+            fill: white;
+        }
+        
+        .status {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        
+        .status.connected {
+            background-color: #dff0d8;
+            color: #3c763d;
+        }
+        
+        .status.error {
+            background-color: #f2dede;
+            color: #a94442;
+        }
+        
+        .status.connecting {
+            background-color: #fcf8e3;
+            color: #8a6d3b;
+        }
+        
+        .log-container {
+            margin-top: 20px;
+            width: 100%;
+            max-height: 150px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+            text-align: left;
+            border-top: 1px solid #eee;
+            padding-top: 10px;
+        }
+        
+        .log-entry {
+            margin: 5px 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+        
+        .version {
+            font-size: 10px;
+            color: #999;
+            margin-top: 20px;
+        }
     </style>
 </head>
 <body>
-    <button id="micButton">Start Mic</button>
-    <div id="log"></div>
+    <div class="container">
+        <h1>Telegram Voice Streaming</h1>
+        
+        <button id="micButton" class="mic-button">
+            <svg class="mic-icon" viewBox="0 0 24 24">
+                <path d="M12,2A3,3 0 0,1 15,5V11A3,3 0 0,1 12,14A3,3 0 0,1 9,11V5A3,3 0 0,1 12,2M19,11C19,14.53 16.39,17.44 13,17.93V21H11V17.93C7.61,17.44 5,14.53 5,11H7A5,5 0 0,0 12,16A5,5 0 0,0 17,11H19Z" />
+            </svg>
+        </button>
+        
+        <div id="status" class="status">Ready to connect</div>
+        
+        <div id="logContainer" class="log-container"></div>
+        
+        <div class="version">v2.0.0</div>
+    </div>
+
     <script>
+        // Get parameters from URL
         const params = new URLSearchParams(window.location.search);
         const chatId = params.get('chat_id');
-        const WS_PORT = params.get('ws_port');
+        const wsPort = params.get('ws_port') || 8766;
+        
+        // UI Elements
+        const micButton = document.getElementById('micButton');
+        const statusDisplay = document.getElementById('status');
+        const logContainer = document.getElementById('logContainer');
+        
+        // State variables
         let isRecording = false;
-        let ws;
-        const logDiv = document.getElementById('log');
-
-        function log(message) {
+        let ws = null;
+        let mediaStream = null;
+        let audioContext = null;
+        let scriptProcessor = null;
+        let source = null;
+        let reconnectAttempts = 0;
+        const MAX_RECONNECT_ATTEMPTS = 3;
+        
+        // Add log entry
+        function log(message, isError = false) {
+            const entry = document.createElement('div');
+            entry.className = 'log-entry' + (isError ? ' error' : '');
+            entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logContainer.appendChild(entry);
+            logContainer.scrollTop = logContainer.scrollHeight;
             console.log(message);
-            logDiv.textContent += message + '\n';
         }
-
-        async function startRecording() {
+        
+        // Update connection status
+        function updateStatus(message, type) {
+            statusDisplay.textContent = message;
+            statusDisplay.className = 'status ' + type;
+        }
+        
+        // Initialize WebSocket connection
+        function connectWebSocket() {
+            if (ws) {
+                ws.close();
+            }
+            
+            updateStatus('Connecting...', 'connecting');
+            
             try {
-                log('Requesting microphone access with sample rate 48000...');
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 48000 } });
-                log('Microphone access granted.');
-
-                const track = stream.getTracks()[0];
-                const settings = track.getSettings();
-                const capturedSampleRate = settings.sampleRate;
-                log(`Captured sample rate: ${capturedSampleRate}`);
-
-                const audioContext = new AudioContext({ sampleRate: capturedSampleRate });
-                const source = audioContext.createMediaStreamSource(stream);
-                const processor = audioContext.createScriptProcessor(2048, 1, 1);
-
-                source.connect(processor);
-                processor.connect(audioContext.destination);
-
-                ws = new WebSocket(`wss://erenyeager.club:${WS_PORT}`);
-                log(`Connecting to WebSocket wss://erenyeager.club:${WS_PORT}...`);
-
-                ws.onopen = async () => {
-                    log('WebSocket connection opened.');
-                    ws.send(chatId); // Send chatId first
-
-                    // Capture initial noise profile (short audio chunk)
-                    const noiseProfileDuration = 0.1; // 0.1 seconds
-                    const noiseProfileData = await captureAudioChunk(stream, noiseProfileDuration, audioContext);
-                    ws.send(noiseProfileData); // Send noise profile second
-                    log('Noise profile sent.');
-
-                    processor.onaudioprocess = (e) => {
-                        const input = e.inputBuffer.getChannelData(0);
-                        let pcm;
-
-                        if (capturedSampleRate !== 48000) {
-                            log(`Resampling from ${capturedSampleRate} to 48000...`);
-                            const resampledData = resample(input, capturedSampleRate, 48000);
-                            pcm = convertFloat32ToInt16(resampledData);
-                        } else {
-                            pcm = convertFloat32ToInt16(input);
-                        }
-
-                        if (ws.readyState === WebSocket.OPEN) {
-                            ws.send(pcm);
-                            // log('Audio chunk sent.'); // Uncomment for detailed logging
-                        } else {
-                            log('WebSocket is not open, cannot send audio.');
-                        }
-                    };
+                ws = new WebSocket(`wss://erenyeager.club:${wsPort}`);
+                
+                ws.onopen = () => {
+                    log('WebSocket connection established');
+                    ws.send(chatId);
+                    reconnectAttempts = 0;
                 };
-
-                ws.onclose = () => log('WebSocket connection closed.');
-                ws.onerror = (error) => log(`WebSocket error: ${error}`);
-
+                
+                ws.onmessage = (event) => {
+                    log(`Server: ${event.data}`);
+                    if (event.data.startsWith('SUCCESS')) {
+                        updateStatus('Connected to voice chat', 'connected');
+                    } else if (event.data.startsWith('ERROR')) {
+                        updateStatus(event.data, 'error');
+                        stopRecording();
+                    }
+                };
+                
+                ws.onclose = (event) => {
+                    log(`WebSocket closed: ${event.reason || 'No reason provided'}`);
+                    updateStatus('Disconnected', 'error');
+                    stopRecording(false);
+                    
+                    // Attempt to reconnect
+                    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS && isRecording) {
+                        reconnectAttempts++;
+                        log(`Attempting to reconnect (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+                        setTimeout(connectWebSocket, 2000);
+                    }
+                };
+                
+                ws.onerror = (error) => {
+                    log(`WebSocket error`, true);
+                    updateStatus('Connection error', 'error');
+                };
+                
             } catch (error) {
-                log(`Error starting recording: ${error}`);
+                log(`Error creating WebSocket: ${error.message}`, true);
+                updateStatus('Connection failed', 'error');
             }
         }
-
-        async function captureAudioChunk(stream, duration, audioContext) {
-            return new Promise(resolve => {
-                const recorder = audioContext.createScriptProcessor(2048, 1, 1);
-                let audioData = [];
-                recorder.onaudioprocess = (e) => {
-                    const input = e.inputBuffer.getChannelData(0);
-                    audioData.push(convertFloat32ToInt16(input));
+        
+        // Start recording and streaming audio
+        async function startRecording() {
+            try {
+                // Get microphone access
+                mediaStream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    } 
+                });
+                
+                // Initialize audio processing
+                audioContext = new AudioContext();
+                source = audioContext.createMediaStreamSource(mediaStream);
+                scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+                
+                // Connect audio nodes
+                source.connect(scriptProcessor);
+                scriptProcessor.connect(audioContext.destination);
+                
+                // Set up audio processing
+                scriptProcessor.onaudioprocess = (event) => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        const inputBuffer = event.inputBuffer.getChannelData(0);
+                        const pcm = convertFloat32ToInt16(inputBuffer);
+                        ws.send(pcm);
+                    }
                 };
-                const source = audioContext.createMediaStreamSource(stream);
-                source.connect(recorder);
-                recorder.connect(audioContext.destination);
-
-                setTimeout(() => {
-                    source.disconnect(recorder);
-                    recorder.disconnect(audioContext.destination);
-                    stream.getTracks().forEach(track => track.stop());
-
-                    let combinedData = new Int16Array(0);
-                    audioData.forEach(chunk => {
-                        const temp = new Int16Array(combinedData.length + chunk.length);
-                        temp.set(combinedData, 0);
-                        temp.set(chunk, combinedData.length);
-                        combinedData = temp;
-                    });
-                    resolve(combinedData.buffer);
-                }, duration * 1000);
-            });
+                
+                // Update UI
+                micButton.classList.add('recording');
+                isRecording = true;
+                
+                // Connect to WebSocket
+                connectWebSocket();
+                
+                log('Started recording');
+                
+            } catch (error) {
+                log(`Error starting recording: ${error.message}`, true);
+                updateStatus('Microphone access denied', 'error');
+            }
         }
-
+        
+        // Stop recording
+        function stopRecording(updateUI = true) {
+            // Clean up audio processing
+            if (scriptProcessor) {
+                scriptProcessor.disconnect();
+                scriptProcessor = null;
+            }
+            
+            if (source) {
+                source.disconnect();
+                source = null;
+            }
+            
+            if (audioContext && audioContext.state !== 'closed') {
+                audioContext.close();
+                audioContext = null;
+            }
+            
+            // Stop all tracks in media stream
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+            }
+            
+            // Close WebSocket connection
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+            
+            // Update UI if needed
+            if (updateUI) {
+                micButton.classList.remove('recording');
+                updateStatus('Disconnected', '');
+                log('Stopped recording');
+            }
+            
+            isRecording = false;
+        }
+        
+        // Convert audio data format
         function convertFloat32ToInt16(buffer) {
             const l = buffer.length;
             const buf = new Int16Array(l);
+            
             for (let i = 0; i < l; i++) {
-                buf[i] = Math.min(1, buffer[i]) * 0x7FFF;
+                const s = Math.max(-1, Math.min(1, buffer[i]));
+                buf[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
             }
-            return buf;
+            
+            return buf.buffer;
         }
-
-        document.getElementById('micButton').addEventListener('click', async () => {
+        
+        // Toggle recording state
+        function toggleRecording() {
             if (!isRecording) {
-                isRecording = true;
-                document.getElementById('micButton').textContent = 'Stop Mic';
-                log('Starting recording...');
-                await startRecording();
+                startRecording();
             } else {
-                isRecording = false;
-                document.getElementById('micButton').textContent = 'Start Mic';
-                log('Stopping recording...');
-                if (ws) {
-                    ws.close();
-                    log('WebSocket closed by user.');
-                }
+                stopRecording();
+            }
+        }
+        
+        // Set up event listeners
+        micButton.addEventListener('click', toggleRecording);
+        
+        // Handle page visibility changes to stop recording when hidden
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden' && isRecording) {
+                stopRecording();
+            }
+        });
+        
+        // Initialize
+        window.addEventListener('load', () => {
+            if (!chatId) {
+                updateStatus('Missing chat ID parameter', 'error');
+                micButton.disabled = true;
+            } else {
+                log(`Initialized for chat ID: ${chatId}`);
+                updateStatus('Ready to connect', '');
+            }
+            
+            // Initialize Telegram WebApp if available
+            if (window.Telegram && window.Telegram.WebApp) {
+                window.Telegram.WebApp.ready();
+                window.Telegram.WebApp.expand();
             }
         });
     </script>
