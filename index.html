@@ -220,91 +220,212 @@
             }
         }
         
-        // Start recording and streaming audio
+        // Modified WebSocket connection initialization
+        function connectWebSocket() {
+                if (ws) {
+                        ws.close();
+                        ws = null;
+                }
+                
+                updateStatus('Connecting...', 'connecting');
+                log('Initializing WebSocket connection...');
+                
+                try {
+                        // Add connection timeout
+                        const connectionTimeout = setTimeout(() => {
+                                if (ws && ws.readyState === WebSocket.CONNECTING) {
+                                        log('Connection timeout - closing socket', true);
+                                        ws.close();
+                                        updateStatus('Connection timeout', 'error');
+                                }
+                        }, 10000); // 10 second timeout
+                        
+                        ws = new WebSocket(`wss://erenyeager.club:${wsPort}`);
+                        
+                        ws.onopen = () => {
+                                clearTimeout(connectionTimeout);
+                                log('WebSocket connection established');
+                                // Send chat ID with a small delay to ensure connection is ready
+                                setTimeout(() => {
+                                        if (ws && ws.readyState === WebSocket.OPEN) {
+                                                ws.send(chatId);
+                                                log('Sent chat ID: ' + chatId);
+                                        }
+                                }, 500);
+                                reconnectAttempts = 0;
+                        };
+                        
+                        ws.onmessage = (event) => {
+                                log(`Server: ${event.data}`);
+                                if (event.data.startsWith('SUCCESS')) {
+                                        updateStatus('Connected to voice chat', 'connected');
+                                } else if (event.data.startsWith('ERROR')) {
+                                        const errorMsg = event.data.substring(7); // Remove "ERROR: " prefix
+                                        updateStatus(errorMsg, 'error');
+                                        stopRecording();
+                                }
+                        };
+                        
+                        ws.onclose = (event) => {
+                                clearTimeout(connectionTimeout);
+                                const reason = event.reason || 'Connection closed';
+                                log(`WebSocket closed: ${reason}`, true);
+                                updateStatus('Disconnected: ' + reason, 'error');
+                                stopRecording(false);
+                                
+                                // Attempt to reconnect with exponential backoff
+                                if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS && isRecording) {
+                                        reconnectAttempts++;
+                                        const backoffTime = Math.min(1000 * Math.pow(2, reconnectAttempts), 10000);
+                                        log(`Attempting to reconnect in ${backoffTime/1000}s (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+                                        setTimeout(connectWebSocket, backoffTime);
+                                }
+                        };
+                        
+                        ws.onerror = (error) => {
+                                log(`WebSocket error: ${error.message || 'Unknown error'}`, true);
+                                updateStatus('Connection error', 'error');
+                        };
+                        
+                } catch (error) {
+                        log(`Error creating WebSocket: ${error.message}`, true);
+                        updateStatus('Connection failed', 'error');
+                }
+        }
+        
+        // Modified audio processing setup
         async function startRecording() {
-            try {
-                // Get microphone access
-                mediaStream = await navigator.mediaDevices.getUserMedia({ 
-                    audio: {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true
-                    } 
-                });
-                
-                // Initialize audio processing
-                audioContext = new AudioContext();
-                source = audioContext.createMediaStreamSource(mediaStream);
-                scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
-                
-                // Connect audio nodes
-                source.connect(scriptProcessor);
-                scriptProcessor.connect(audioContext.destination);
-                
-                // Set up audio processing
-                scriptProcessor.onaudioprocess = (event) => {
-                    if (ws && ws.readyState === WebSocket.OPEN) {
-                        const inputBuffer = event.inputBuffer.getChannelData(0);
-                        const pcm = convertFloat32ToInt16(inputBuffer);
-                        ws.send(pcm);
-                    }
-                };
-                
-                // Update UI
-                micButton.classList.add('recording');
-                isRecording = true;
-                
-                // Connect to WebSocket
-                connectWebSocket();
-                
-                log('Started recording');
-                
-            } catch (error) {
-                log(`Error starting recording: ${error.message}`, true);
-                updateStatus('Microphone access denied', 'error');
-            }
+                try {
+                        // Check if already recording
+                        if (isRecording) {
+                                log('Already recording, stopping first...');
+                                await stopRecording();
+                        }
+                        
+                        // Get microphone access with explicit constraints
+                        mediaStream = await navigator.mediaDevices.getUserMedia({ 
+                                audio: {
+                                        echoCancellation: true,
+                                        noiseSuppression: true,
+                                        autoGainControl: true,
+                                        channelCount: 1,
+                                        sampleRate: 48000
+                                } 
+                        });
+                        
+                        // Initialize audio processing
+                        audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                                sampleRate: 48000
+                        });
+                        
+                        source = audioContext.createMediaStreamSource(mediaStream);
+                        scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+                        
+                        // Add audio worklet if supported
+                        if (audioContext.audioWorklet) {
+                                try {
+                                        await audioContext.audioWorklet.addModule('audio-processor.js');
+                                        // Fall back to ScriptProcessor if AudioWorklet setup fails
+                                } catch (e) {
+                                        log('Falling back to ScriptProcessor: ' + e.message);
+                                }
+                        }
+                        
+                        // Connect audio nodes
+                        source.connect(scriptProcessor);
+                        scriptProcessor.connect(audioContext.destination);
+                        
+                        // Buffer for collecting audio data
+                        let audioBuffer = new Float32Array(0);
+                        const SEND_INTERVAL = 100; // Send every 100ms
+                        
+                        // Set up audio processing with buffering
+                        scriptProcessor.onaudioprocess = (event) => {
+                                if (!isRecording) return;
+                                
+                                const inputData = event.inputBuffer.getChannelData(0);
+                                const newBuffer = new Float32Array(audioBuffer.length + inputData.length);
+                                newBuffer.set(audioBuffer);
+                                newBuffer.set(inputData, audioBuffer.length);
+                                audioBuffer = newBuffer;
+                        };
+                        
+                        // Regular interval to send buffered audio
+                        const sender = setInterval(() => {
+                                if (ws && ws.readyState === WebSocket.OPEN && audioBuffer.length > 0) {
+                                        const pcm = convertFloat32ToInt16(audioBuffer);
+                                        ws.send(pcm);
+                                        audioBuffer = new Float32Array(0);
+                                }
+                        }, SEND_INTERVAL);
+                        
+                        // Update UI
+                        micButton.classList.add('recording');
+                        isRecording = true;
+                        
+                        // Connect to WebSocket
+                        connectWebSocket();
+                        
+                        log('Started recording');
+                        
+                        // Cleanup function
+                        return () => {
+                                clearInterval(sender);
+                                stopRecording();
+                        };
+                        
+                } catch (error) {
+                        log(`Error starting recording: ${error.message}`, true);
+                        updateStatus('Microphone access denied', 'error');
+                        await stopRecording();
+                }
         }
         
-        // Stop recording
-        function stopRecording(updateUI = true) {
-            // Clean up audio processing
-            if (scriptProcessor) {
-                scriptProcessor.disconnect();
-                scriptProcessor = null;
-            }
-            
-            if (source) {
-                source.disconnect();
-                source = null;
-            }
-            
-            if (audioContext && audioContext.state !== 'closed') {
-                audioContext.close();
-                audioContext = null;
-            }
-            
-            // Stop all tracks in media stream
-            if (mediaStream) {
-                mediaStream.getTracks().forEach(track => track.stop());
-                mediaStream = null;
-            }
-            
-            // Close WebSocket connection
-            if (ws) {
-                ws.close();
-                ws = null;
-            }
-            
-            // Update UI if needed
-            if (updateUI) {
-                micButton.classList.remove('recording');
-                updateStatus('Disconnected', '');
-                log('Stopped recording');
-            }
-            
-            isRecording = false;
+        // Modified stop recording function
+        async function stopRecording(updateUI = true) {
+                try {
+                        isRecording = false;
+                        
+                        // Clean up audio processing
+                        if (scriptProcessor) {
+                                scriptProcessor.disconnect();
+                                scriptProcessor = null;
+                        }
+                        
+                        if (source) {
+                                source.disconnect();
+                                source = null;
+                        }
+                        
+                        if (audioContext) {
+                                await audioContext.close();
+                                audioContext = null;
+                        }
+                        
+                        // Stop all tracks in media stream
+                        if (mediaStream) {
+                                mediaStream.getTracks().forEach(track => track.stop());
+                                mediaStream = null;
+                        }
+                        
+                        // Close WebSocket connection
+                        if (ws) {
+                                ws.close(1000, 'Stop recording requested');
+                                ws = null;
+                        }
+                        
+                        // Update UI if needed
+                        if (updateUI) {
+                                micButton.classList.remove('recording');
+                                updateStatus('Disconnected', '');
+                                log('Stopped recording');
+                        }
+                        
+                } catch (error) {
+                        log(`Error during cleanup: ${error.message}`, true);
+                }
         }
-        
+
         // Convert audio data format
         function convertFloat32ToInt16(buffer) {
             const l = buffer.length;
